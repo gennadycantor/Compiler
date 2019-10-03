@@ -159,6 +159,7 @@ public class P6 {
 		// TODO: Calling codeGen   //
 		//////////////////////////
 
+		astRoot.codeGen(); // call codegen
 		return P6.RESULT_CORRECT;
 	}
 
@@ -212,7 +213,15 @@ public class P6 {
 	}
 
 	public static void main(String[] args) {
-		P6 instance = new P6(args);
-		instance.run();
-	}
+	    P6 instance = new P6(args);
+	    try {
+                Codegen.p = new PrintWriter(args[1]);
+            } 
+	    catch(FileNotFoundException e) {
+               System.err.println("Exception caught"); 
+	    }
+    	instance.run(); // call process and call codegen on root
+        Codegen.p.close();
+    }	
+	
 }

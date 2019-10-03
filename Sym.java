@@ -6,11 +6,30 @@ import java.util.*;
  */
 public class Sym {
     private Type type;
-    
+    // add offset field
+    private int offset; 
+    private boolean isGlobal; 
+
     public Sym(Type type) {
         this.type = type;
     }
     
+    public int getOffset() {
+    	return offset;
+    }
+
+    public void setOffset(int offset) {
+    	this.offset = offset;
+    }
+
+    public boolean getIsGlobal() {
+        return isGlobal;
+    }
+
+    public void setIsGlobal(boolean isGlobal) {
+        this.isGlobal = isGlobal;
+    }
+
     public Type getType() {
         return type;
     }

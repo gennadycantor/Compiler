@@ -1,0 +1,28 @@
+
+int f() { return 1;}
+
+
+void main() {
+    int x;
+    int y;
+    int z;
+    x = 1;
+    y = 3;
+    cout << "Hello world!";
+    cout << "\n";
+    cout << 3;
+    cin >> x;
+    if (x < 3) {
+        x--;
+    }
+    z = f();
+    while (y < 10) {
+        if (x == 1) {
+            y++; 
+	}
+	else {
+	    x--;
+	}
+    }
+    x ++;
+}

@@ -109,7 +109,7 @@ import java.util.*;
 abstract class ASTnode { 
     // every subclass must provide an unparse operation
     abstract public void unparse(PrintWriter p, int indent);
-
+    
     // this method can be used by the unparse methods to do indenting
     protected void addIndent(PrintWriter p, int indent) {
         for (int k=0; k<indent; k++) p.print(" ");
@@ -134,6 +134,12 @@ class ProgramNode extends ASTnode {
     public void nameAnalysis() {
         SymTable symTab = new SymTable();
         myDeclList.nameAnalysis(symTab);
+	// here, we have to make sure our program contains a function called "main"
+	// we will define the boolean helper function in my decllist class
+	if (myDeclList.hasMain() == false) {
+		// if our program has no main function print errmsg
+		ErrMsg.fatal(0,0, "No Main Function");
+	}
     }
     
     /**
@@ -141,6 +147,11 @@ class ProgramNode extends ASTnode {
      */
     public void typeCheck() {
         myDeclList.typeCheck();
+    }
+
+    public void codeGen() {
+   	// call codegen on our declist
+	myDeclList.codeGen();
     }
     
     public void unparse(PrintWriter p, int indent) {
@@ -154,8 +165,11 @@ class ProgramNode extends ASTnode {
 class DeclListNode extends ASTnode {
     public DeclListNode(List<DeclNode> S) {
         myDecls = S;
+	isGlobal = true;
+	totalLocalVars = 0;
     }
 
+    
     /**
      * nameAnalysis
      * Given a symbol table symTab, process all of the decls in the list.
@@ -171,15 +185,73 @@ class DeclListNode extends ASTnode {
      * decls in the list.
      */    
     public void nameAnalysis(SymTable symTab, SymTable globalTab) {
-        for (DeclNode node : myDecls) {
-            if (node instanceof VarDeclNode) {
-                ((VarDeclNode)node).nameAnalysis(symTab, globalTab);
-            } else {
+	int curOffset = 0;
+	int totalLocalVars = 0;
+	for (DeclNode node : myDecls) {
+           if (node instanceof VarDeclNode) {
+		// nameAnalysis of declnodes now returns sym object
+		// we need to store this sym so that we can store its
+		// offset in the symfield
+              	Sym sym = ((VarDeclNode)node).nameAnalysis(symTab, globalTab);
+		// if our var is not local we will set -4
+		// decrementally
+		// we also need a new field in the sym objet
+		// that tells us whether this var is local or not
+		// as mentioned above, this will be important when we
+		// write codegen method in IdNode
+		if (!isGlobal) {
+		   sym.setOffset(curOffset);
+		   curOffset -= 4;
+		   totalLocalVars++;
+		   //sym.setOffset(curOffset);
+		   sym.setIsGlobal(false);
+		}
+		// if we have a global var, 
+		// this is stored in data seg, 
+		// dont do anything with offset
+		// just set its gobal status to true
+		else {
+		   sym.setIsGlobal(true);
+		}
+            }
+	   else {
                 node.nameAnalysis(symTab);
             }
         }
-    }    
+    }
+       
+
+    // write a method to compute total bytes of offset, we will need this for 
+    // updating SP in fndecl
+    public int numLocalVars() {
+    	return totalLocalVars;
+    }
     
+    // check among decllist,
+    // we have a function named
+    // "main"
+    public boolean hasMain() {
+        for (DeclNode node: myDecls) {
+	    // of course the node has to be 
+	    // instanceof FnDecl
+	    if (node instanceof FnDeclNode) {
+	    	String funcName = ((FnDeclNode)node).getId().name();
+		if(funcName.equals("main")) {
+		    return true;
+		}
+	    }
+	}
+	// if we reach here, that mean we never foudn
+	// function called main
+	return false;
+    }
+
+    public void codeGen() {
+    	for (DeclNode node : myDecls) {
+	    node.codeGen();
+	}
+    }
+
     /**
      * typeCheck
      */
@@ -201,7 +273,13 @@ class DeclListNode extends ASTnode {
         }
     }
 
+    public void setLocal() {
+    	isGlobal = false;
+    }
+
     // list of kids (DeclNodes)
+    private int totalLocalVars;
+    private boolean isGlobal;
     private List<DeclNode> myDecls;
 }
 
@@ -219,10 +297,16 @@ class FormalsListNode extends ASTnode {
      */
     public List<Type> nameAnalysis(SymTable symTab) {
         List<Type> typeList = new LinkedList<Type>();
+	//init current offset to 0
+	int curOffset = 0;
+	
         for (FormalDeclNode node : myFormals) {
             Sym sym = node.nameAnalysis(symTab);
             if (sym != null) {
                 typeList.add(sym.getType());
+		// for each parameter, update current offset
+		sym.setOffset(curOffset);
+		curOffset -= 4;
             }
         }
         return typeList;
@@ -263,9 +347,28 @@ class FnBodyNode extends ASTnode {
      * - process the statement list
      */
     public void nameAnalysis(SymTable symTab) {
-        myDeclList.nameAnalysis(symTab);
-        myStmtList.nameAnalysis(symTab);
-    }    
+        myDeclList.setLocal();
+	myDeclList.nameAnalysis(symTab);
+        
+	myStmtList.nameAnalysis(symTab);
+    }   
+
+    // returns offsets that will be
+    // used to update SP in fnDecl's codeGen 
+    public int getTotalOffsets() {
+    	int totalVars = myDeclList.numLocalVars();
+	int totalBytes = 4*totalVars;
+	return totalBytes;
+    }
+    // we need a label's parameter
+    public void codeGen(String returnLabel) {
+    	// we need to call codeGen
+	// on stmtlist
+	// i.e. fuction calls etc
+	// we need to pass that return label so 
+	myDeclList.codeGen();
+	myStmtList.codeGen(returnLabel);
+    }
  
     /**
      * typeCheck
@@ -298,6 +401,14 @@ class StmtListNode extends ASTnode {
             node.nameAnalysis(symTab);
         }
     }    
+
+    public void codeGen(String returnLabel) {
+    	// for each stmt 
+	// generate code
+	for(StmtNode node : myStmts) {
+	    node.codeGen(returnLabel);
+	}
+    }
     
     /**
      * typeCheck
@@ -338,6 +449,13 @@ class ExpListNode extends ASTnode {
         }
     }
     
+    public void codeGen() {
+    	// for each expnode call 
+	// generate code
+	for (ExpNode node : myExps) {
+	    node.codeGen();
+	}
+    }
     /**
      * typeCheck
      */
@@ -389,6 +507,7 @@ abstract class DeclNode extends ASTnode {
 
     // default version of typeCheck for non-function decls
     public void typeCheck() { }
+    public void codeGen() {}
 }
 
 class VarDeclNode extends DeclNode {
@@ -450,6 +569,13 @@ class VarDeclNode extends DeclNode {
                          "Multiply declared identifier");
             badDecl = true;            
         }
+
+	// check whether the variable is local or global
+	if (symTab.lookupGlobal(name) == null) {
+		// if variable is global
+		// change isGlobal flag
+		
+	}
         
         if (!badDecl) {  // insert into symbol table
             try {
@@ -478,6 +604,27 @@ class VarDeclNode extends DeclNode {
         
         return sym;
     }    
+
+    // codegen method for vardecl
+    // here, we have access to sym's offset
+    // after we nameAnalyze, we know offset of sym
+    // which will allow us to distinguish between
+    // local or global var, and here, and we call
+    // codegen for declnode, we will generate appropriate
+    // codes for global var
+    public void codeGen() {
+    	int offset = myId.sym().getOffset();
+	if (offset == 0) {
+		// this means we have to generate code for 
+		// global vars
+ 	    // .data
+	    // .align 2
+	    // _v: .space 4
+	    Codegen.generate(".data");
+	    Codegen.generate(".align 2");
+	    Codegen.generate("_" + myId.name() + ":", ".space", "4" );
+	}
+    }
     
     public void unparse(PrintWriter p, int indent) {
         addIndent(p, indent);
@@ -568,6 +715,85 @@ class FnDeclNode extends DeclNode {
         
         return null;
     } 
+
+    public void codeGen() {
+
+	// we assumed making for params
+	// and pushign the params
+	// on to the stack 
+	// was done updon calling function
+	// so go to callexp and sort this out
+	
+    	// function preamble
+	// first see if the function name is main
+	if (myId.name().equals("main")) {
+	    // .text
+	    // .global main
+	    // main:
+	    Codegen.generate(".text");
+	    Codegen.generate(".global", "main");
+	    Codegen.genLabel("main");
+	}
+
+	else {
+	    //.text
+	    //_functionName
+	    Codegen.generate(".text");
+	    Codegen.generate("_" + myId.name());
+	}
+
+	// function entry
+	// push the return address i.e sw and subu
+	Codegen.genPush(Codegen.RA);
+	// save FP in conrol link
+	Codegen.genPush(Codegen.FP);
+	// set the FP
+	// get size of numparams in bytes
+	int numParams = ((FnSym)myId.sym()).getNumParams();
+	int totalBytes = numParams*4;
+	Codegen.generate("addu", Codegen.FP, Codegen.SP, totalBytes + 8);
+	// push spaze for local vars
+	// get size of local vars
+	int localBytes = myBody.getTotalOffsets();
+	Codegen.generate("subu", Codegen.SP, Codegen.SP, localBytes);
+
+	// **** //
+	// label // 
+	// has to be a new label everytime
+	String returnLabel = Codegen.nextLabel();
+	// and we need to pass this label into myBody's codegen
+	// so that it will pass it down to stmtnode's (return stmt) codegen
+	// that's how it will know where to come back to after it leaves
+	// return value on stack
+	// generate code for funciton body
+	myBody.codeGen(returnLabel);
+	// funciton epilogue zzz
+	// *** //
+	// this is where we need to comeback to afte return//
+	// ***//
+	Codegen.genLabel(returnLabel);
+	// first load return address
+	Codegen.generateIndexed("lw", Codegen.RA, Codegen.FP, totalBytes, "Func exit");
+	// save control link to restore old SP
+	Codegen.generate("move", Codegen.T0, Codegen.FP);
+	// restore old FP remember it is stored in cntrol link
+	// which is numparams + 4byts above current FP
+	Codegen.generateIndexed("lw", Codegen.FP, Codegen.FP, totalBytes + 4);
+	// restore SP
+	Codegen.generate("move", Codegen.SP, Codegen.T0);
+	// return
+	
+	// if this was main function, then we have to return the
+	// value 
+	String symName = ((IdNode)myId).name();
+	if (symName.equals("main")) {
+	    Codegen.generate("li", Codegen.V0, "10");
+	    Codegen.generate("syscall");
+	}
+	
+	Codegen.generate("jr", Codegen.RA);
+    }
+
        
     /**
      * typeCheck
@@ -586,6 +812,10 @@ class FnDeclNode extends DeclNode {
         p.println(") {");
         myBody.unparse(p, indent+4);
         p.println("}\n");
+    }
+
+    public IdNode getId() {
+    	return myId;
     }
 
     // 4 kids
@@ -819,6 +1049,11 @@ class StructNode extends TypeNode {
 abstract class StmtNode extends ASTnode {
     abstract public void nameAnalysis(SymTable symTab);
     abstract public void typeCheck(Type retType);
+    //public void codeGen() {} // NOTE:
+    //we have to get rid of this method
+    //and just pass in label string to all stmt's codegen now
+    //because above, in StmtListNode's codegen, thats what we do
+    public void codeGen(String returnLabel) {};
 }
 
 class AssignStmtNode extends StmtNode {
@@ -832,6 +1067,15 @@ class AssignStmtNode extends StmtNode {
      */
     public void nameAnalysis(SymTable symTab) {
         myAssign.nameAnalysis(symTab);
+    }
+
+    public void codeGen(String returnLabel) {
+ 	// nothing to do
+	// but call codeGen
+	// on myAssign. Everything is
+	// done in assignnode's code gen	
+        myAssign.codeGen();
+	
     }
     
     /**
@@ -862,6 +1106,32 @@ class PostIncStmtNode extends StmtNode {
      */
     public void nameAnalysis(SymTable symTab) {
         myExp.nameAnalysis(symTab);
+    }
+
+    public void codeGen(String returnLabel) {
+    	// here, the approach is very similar to
+	// what we did for codeGen on myAssign node
+	// i.e. x++; <=> x = x + 1;
+	// call codeGen on myExp to push
+	// the value of X
+	myExp.codeGen(); // evaluate RHS 
+	// then call genAddr to push address
+	// of x on stack
+	((IdNode)myExp).genAddr(); //TODO
+	// now pop the address of exp and store it
+	// to T1
+	Codegen.genPop(Codegen.T1);
+	// then pop the value of the expression
+	// store it to T0
+	Codegen.genPop(Codegen.T0);
+	// now add T0 and 1 and store to T0
+	Codegen.generate("addi",Codegen.T0, Codegen.T0, 1); // 1 is imm value
+	// finally generate code to push T0 into address of myExp i.e. what T1 holds
+	Codegen.generateIndexed("sw", Codegen.T0, Codegen.T1, 0);
+	// shoudn't we update SP?
+	Codegen.genPush(Codegen.T0);
+	// i.e.: Codegen.generate("subu", Codegen.SP, Codegen.SP, 4)
+	
     }
     
     /**
@@ -898,7 +1168,33 @@ class PostDecStmtNode extends StmtNode {
     public void nameAnalysis(SymTable symTab) {
         myExp.nameAnalysis(symTab);
     }
-    
+    public void codeGen(String returnLabel) {
+    	// here, the approach is very similar to
+	// what we did for codeGen on myAssign node
+	// i.e. x++; <=> x = x + 1;
+	// call codeGen on myExp to push
+	// the value of X
+	myExp.codeGen(); // evaluate RHS 
+	// then call genAddr to push address
+	// of x on stack
+	((IdNode)myExp).genAddr(); // we need to write this still for each expNode TODO
+	// now pop the address of exp and store it
+	// to T1
+	Codegen.genPop(Codegen.T1);
+	// then pop the value of the expression
+	// store it to T0
+	Codegen.genPop(Codegen.T0);
+	// now add T0 and 1 and store to T0
+	Codegen.generate("addi",Codegen.T0, Codegen.T0, -1); // -1 is imm value
+	// finally generate code to push T0 into address of myExp i.e. what T1 holds
+	Codegen.generateIndexed("sw", Codegen.T0, Codegen.T1, 0);
+	// shoudn't we update SP?
+	Codegen.genPush(Codegen.T0);
+	// I think we actually want to update SP i.e. 
+	// we want to leave the value on stack. Consider following example:
+	// x++; y = x; here, if we dont leave the value, we are going to
+	// grab stomething werid to store into y.
+    } 
     /**
      * typeCheck
      */
@@ -933,6 +1229,26 @@ class ReadStmtNode extends StmtNode {
     public void nameAnalysis(SymTable symTab) {
         myExp.nameAnalysis(symTab);
     }    
+
+    public void codeGen(String returnLabel) {
+    	// code we want to generate to read an int value into V0
+	// li $V0 5
+	// syscall
+	// first generate above two codes
+	Codegen.generate("li", Codegen.V0,5);
+	Codegen.generateWithComment("syscall", "read stmt");
+	// now generate code to store value from
+	// V0 to address of the IdNode
+	// so first push the address of IdNode on to th
+	// stack
+	((IdNode)myExp).genAddr(); 
+	// address is now on the stack
+	// we will pop it into some register
+	Codegen.genPop(Codegen.T0);
+	// store the value from V0 to address of IdNode
+	Codegen.generateIndexed("sw", Codegen.V0, Codegen.T0, 0);
+
+    }
  
     /**
      * typeCheck
@@ -978,6 +1294,34 @@ class WriteStmtNode extends StmtNode {
      */
     public void nameAnalysis(SymTable symTab) {
         myExp.nameAnalysis(symTab);
+    }
+    
+    public void codeGen(String returnLabel) {
+	// here, depending on myExp type,
+	// the arguments for generate will
+	// vary depending on whehter it is of type
+	// string, or int
+	// evalue exp and leave value on stack
+	myExp.codeGen();
+	// pop the value and store into A0
+	Codegen.genPop(Codegen.A0);
+	if (myExp.typeCheck().isStringType()) {
+	    // if we are writing a string
+	    // we use 4
+	    Codegen.generate("li", Codegen.V0, 4);
+	}
+	else {
+	    // in crrt language,if this is not strtype
+	    // then it must be either bool or int
+	    // so we use 1
+	    Codegen.generate("li", Codegen.V0, 1);
+	}
+	//Codegen.genPop(Codegen.A0);
+	// generate register V0 to 1
+	Codegen.generate("li", Codegen.V0, 1);
+	// generate syscall inst
+	Codegen.generateWithComment("syscall", "write stmt");
+	
     }
 
     /**
@@ -1046,6 +1390,25 @@ class IfStmtNode extends StmtNode {
             System.exit(-1);        
         }
     }
+
+    public void codeGen(String returnLabel) {
+	// first generate false label
+	// after evaluating condition(myExp)
+	// if False, we will jump to that label
+	String falseLabel = Codegen.nextLabel();
+	// now evalute myExp, (value will be on stack)
+	// and pop itin to some register
+	myExp.codeGen();
+	Codegen.genPop(Codegen.T0);
+	// now generate code that will jump to Flase label
+	Codegen.generate("beq", Codegen.T0, Codegen.FALSE, falseLabel);
+	// if condition was true, we will execute stmt
+	myStmtList.codeGen(returnLabel); 
+	// else we will jump
+	// generate label for false case
+	Codegen.genLabel(falseLabel);
+    }
+
     
      /**
      * typeCheck
@@ -1123,6 +1486,29 @@ class IfElseStmtNode extends StmtNode {
             System.exit(-1);        
         }
     }
+
+    public void codeGen(String returnLabel) {
+    	// very similar to ifstmt's code gen,
+	// except here, we have to generate two labels
+	// each for true case where we will generate code
+	// for thenstmtlist and if false case, thenstmtlist
+	String trueSuccessorLabel = Codegen.nextLabel();
+	String falseLabel = Codegen.nextLabel();
+	// evaluate condition and pop that value 
+	myExp.codeGen();
+	Codegen.genPop(Codegen.T0);
+	// generate code that will jump to falselabel if false
+	Codegen.generate("beq", Codegen.T0, Codegen.FALSE, falseLabel);
+	// generat code for tehnstmtlist
+	myThenStmtList.codeGen(returnLabel);
+	// end true brach and jump to trueSuccessorlabel
+	// i.e. skip the false branch
+	Codegen.generate("j", trueSuccessorLabel);
+	Codegen.genLabel(falseLabel);
+	// generate code for elsestmtlist
+	myElseStmtList.codeGen(returnLabel);
+	Codegen.genLabel(trueSuccessorLabel);
+    }
     
     /**
      * typeCheck
@@ -1192,6 +1578,27 @@ class WhileStmtNode extends StmtNode {
             System.exit(-1);        
         }
     }
+
+    public void codeGen(String returnLabel) {
+    	// here we want to generate 
+	// entry label and exit label
+	String entry = Codegen.nextLabel();
+	String exit = Codegen.nextLabel();
+	Codegen.genLabel(entry);
+	// evalute myExp value
+	myExp.codeGen();
+	// pop that value into some reg
+	Codegen.genPop(Codegen.T0);
+	// if condition is false, we want to jump
+	// to exit label
+	Codegen.generate("beq", Codegen.T0, Codegen.FALSE, exit);
+	// generate code for stmtlist
+	myStmtList.codeGen(returnLabel);
+	// jump back to entry label
+	Codegen.generate("j", entry);
+	Codegen.genLabel(exit); // loop Successor
+
+    }
     
     /**
      * typeCheck
@@ -1252,6 +1659,10 @@ class RepeatStmtNode extends StmtNode {
             System.exit(-1);        
         }
     }
+
+    public void codeGen() {
+    	// omitted
+    }
     
     /**
      * typeCheck
@@ -1297,6 +1708,16 @@ class CallStmtNode extends StmtNode {
     public void nameAnalysis(SymTable symTab) {
         myCall.nameAnalysis(symTab);
     }
+
+    public void codeGen() {
+    	// callStmtNode -> callExpNode
+	// callExpNode may not return anyvalue
+	// so we need to pop it off stack
+	myCall.codeGen();
+	// callexp's codegen pushed return val in V0 on stack
+	// so we need to load it back to V0 and overwirte SP
+	Codegen.genPop(Codegen.V0);
+    }
     
     /**
      * typeCheck
@@ -1330,7 +1751,32 @@ class ReturnStmtNode extends StmtNode {
             myExp.nameAnalysis(symTab);
         }
     }
-
+    // we need to pass the label in because
+    // we need to know where to jump to
+    // after return	
+    public void codeGen(String returnLabel) {
+	// we have to cases
+	// where we are returning some expression
+	// or just return; i.e. myExp should be null
+	// if we are returning some exp we need to 
+	// evaluate in and push its value on stack
+	if (myExp != null) {
+	    myExp.codeGen();
+      	    // then we need to pop that value into V0
+	    Codegen.genPop(Codegen.V0);
+	}
+	// regardless of whether we were returning exp or not
+	// we have to give control back to called func
+	// SO we need to go back upto fndecl, where FnBody's codegen iscalled,
+	// and generate the "return code".
+	// this is done by generating the return code just once after generating the code
+	// for the FnBody. So we need to use nextLabel() function to label that code
+	// and use "j" or "b" to unconditionally jump to that after return stmt
+	// this also means we might have to pass returnLabel to IF or while's codegen method
+	// becuase in there, we could be returning something
+	// we need to gereate that label just before function epilogue
+	Codegen.generate("b" , returnLabel);
+    }
     /**
      * typeCheck
      */
@@ -1380,7 +1826,7 @@ abstract class ExpNode extends ASTnode {
      * Default version for nodes with no names
      */
     public void nameAnalysis(SymTable symTab) { }
-    
+    public void codeGen() {} 
     abstract public Type typeCheck();
     abstract public int lineNum();
     abstract public int charNum();
@@ -1412,6 +1858,19 @@ class IntLitNode extends ExpNode {
      */
     public Type typeCheck() {
         return new IntType();
+    }
+
+    public void codeGen() {
+    	// very similar to strlitnode
+	// but we are not generating any code
+	// data segment portion
+	// we just have to generate code
+	// to push value on to the stakc
+	// li $T0 val
+	Codegen.generate("li" ,Codegen.T0, myIntVal);
+	// sw $T0 0($SP)
+	// and then subu SP SP 4 update to leave on stack
+	Codegen.genPush(Codegen.T0);
     }
     
     public void unparse(PrintWriter p, int indent) {
@@ -1450,7 +1909,24 @@ class StringLitNode extends ExpNode {
     public Type typeCheck() {
         return new StringType();
     }
-        
+    
+    public void codeGen() {
+        // for strlitnode, 
+	// strlit must be stored in the data seg
+	Codegen.generate(".data");
+	// we have to generate new label every time
+	// so use nextLabel() ?
+	String strLabel = Codegen.nextLabel();
+	Codegen.generateLabeled(strLabel, ".asciiz", myStrVal);
+	// now we need to push its address
+	Codegen.generate(".text");
+	// load address into t0
+	Codegen.generate("la", Codegen.T0, strLabel);
+	// push onto stack
+	Codegen.genPush(Codegen.T0);
+
+    }    
+
     public void unparse(PrintWriter p, int indent) {
         p.print(myStrVal);
     }
@@ -1486,6 +1962,7 @@ class TrueNode extends ExpNode {
     public Type typeCheck() {
         return new BoolType();
     }
+
         
     public void unparse(PrintWriter p, int indent) {
         p.print("true");
@@ -1599,6 +2076,57 @@ class IdNode extends ExpNode {
             System.exit(-1);
         }
         return null;
+    }
+
+    public void genAddr() {
+    	// check for local or global
+	if (mySym.getOffset() == 0) {
+	    // generate
+	    // la $t0 _global
+	    Codegen.generate("la", Codegen.T0, "_" + myStrVal);
+	    Codegen.genPush(Codegen.T0);
+	}
+	else {
+	    // we have the sym offset from declist nameanalysis
+	    // this is called in callExpNode
+	    // and fp is at the top of param just before ret add (?)
+	    // from DeclList, first local's offset begins at -4.
+	    // so (-8 + 4 + offset)FP
+	    int offSet = mySym.getOffset();
+	    int adjustedOffset = offSet - 4; // recheck this 
+	    Codegen.generateIndexed("la", Codegen.T0, Codegen.FP, adjustedOffset);
+	    Codegen.genPush(Codegen.T0);
+	}
+
+    
+    }
+
+    public void codeGen() {
+    	// similar to genAddr,
+	// except we load the value instead of address into T0
+	 // check for local or global
+        if (mySym.getOffset() == 0) {
+            // generate
+            // la $t0 _global
+            Codegen.generate("lw", Codegen.T0, "_" + myStrVal);
+            Codegen.genPush(Codegen.T0);
+        }
+        else {
+            // we have the sym offset from declist nameanalysis
+            // this is called in callExpNode
+            // and fp is at the top of param just before ret add (?)
+            // from DeclList, first local's offset begins at -4.
+            // so (-8 + 4 + offset)FP
+            int offSet = mySym.getOffset();
+            int adjustedOffset = offSet - 4; // recheck this
+            Codegen.generateIndexed("lw", Codegen.T0, Codegen.FP, adjustedOffset);
+            Codegen.genPush(Codegen.T0);
+        }
+
+    }
+
+    public void genJumpAndLink(String fnName) {
+    	Codegen.generate("jal",fnName);
     }
            
     public void unparse(PrintWriter p, int indent) {
@@ -1790,7 +2318,36 @@ class AssignNode extends ExpNode {
         myLhs.nameAnalysis(symTab);
         myExp.nameAnalysis(symTab);
     }
- 
+    
+    public void codeGen() {
+    	// compute RHS expr on stack leave value on stack
+	myExp.codeGen(); //load value into T0, push T0 into (sp), decrement sp by4
+	// push address of LHS ID on stack
+	((IdNode)myLhs).genAddr();  // this is equivalent to using la and -8(fp) to load to T0/1
+				   // then storing that value on to the stack
+				   // then adjusting Sp
+	// load that address into T1 and pop it
+	Codegen.genPop(Codegen.T1); // we just stored lhs addr to reg T1
+			   // eq to MIPs: load to T1
+			   // sw (push) T1 onto stack ($SP)
+			   // adjust stackpointer etc
+	// now load the RHS exp into T0 and pop it
+	Codegen.genPop(Codegen.T0);
+	// now store T0's (RHS value) into what the address of
+	// LHS holds (T1)
+	Codegen.generateIndexed("sw", Codegen.T0, Codegen.T1, 0);// sw $T0 0($T1)
+	// leave on stack
+	// Codegen.genPush(Codegen.T1) is this necessary? we alraedy genearted sw code jsut before
+    	// NO actually I think we need to do genPush here, because we want to 
+	// leave the value on stack i.e. if we do genPop up in StmtNode
+	// we will load(lw) something that is below this..
+	// here is the line of code that we need to add to 
+	// make equivalent to had we just done genPush
+	Codegen.generateIndexed("sw", Codegen.T0, Codegen.SP, 0); // cmment this out if we disagree later.
+    	Codegen.generate("subu", Codegen.SP, Codegen.SP, 4); // cmment this out if we disagreee later
+	// I also just realized the 2lines of codes above is equivalent to had we just
+	// done: Codegen.genPush(Codegen.T0);
+    }
     /**
      * typeCheck
      */
@@ -1902,6 +2459,23 @@ class CallExpNode extends ExpNode {
         myExpList.typeCheck(fnSym.getParamTypes());
         return fnSym.getReturnType();
     }
+
+    public void codeGen() {
+    	// evaluate each param  pushing values onto the stack;
+	if (myExpList != null) {
+	    myExpList.codeGen();
+	    // aceess number of parameters in the expression list
+	    //int numParams = myId.sym().getNumParams();
+
+	    // we have to know which function to go to
+	    String fnId = myId.name();
+	   ((IdNode)myId).genJumpAndLink(fnId); // @ id node just generate jal inst
+	    Codegen.genPush(Codegen.V0);
+	}
+
+    }
+
+
         
     // ** unparse **
     public void unparse(PrintWriter p, int indent) {
@@ -1945,6 +2519,12 @@ abstract class UnaryExpNode extends ExpNode {
      */
     public void nameAnalysis(SymTable symTab) {
         myExp.nameAnalysis(symTab);
+    }
+
+    public void codeGen() {
+    	// evaluate the value and push on stack
+	myExp.codeGen();
+	// do we want to pop here?
     }
     
     // one child
@@ -2017,6 +2597,21 @@ class UnaryMinusNode extends UnaryExpNode {
         return retType;
     }
 
+    public void codeGen() {
+    	// suppose we have -3;
+        myExp.codeGen();
+        // after above code, now we have 3 on stack
+        Codegen.genPop(Codegen.T0); //  when we pop
+       // we will have retrieved the value and updated the stack pointer
+       // now we have to multiply 3 by -1 i.e. content of T0 with -1
+       //Codegen.generate("multi", "does mult work" ,Codegen.T0, Codegen.T0, -1);
+	Codegen.generate("sub", Codegen.T0, "$zero", Codegen.T0);
+       // and we have to push T0 back into the stack
+       Codegen.genPush(Codegen.T0);
+
+    }
+
+
     public void unparse(PrintWriter p, int indent) {
         p.print("(-");
         myExp.unparse(p, 0);
@@ -2048,6 +2643,10 @@ class NotNode extends UnaryExpNode {
         
         return retType;
     }
+
+    //public void codeGen() {
+	// not sure what to do here
+    //}
 
     public void unparse(PrintWriter p, int indent) {
         p.print("(!");
@@ -2088,8 +2687,7 @@ abstract class ArithmeticExpNode extends BinaryExpNode {
         if (type1.isErrorType() || type2.isErrorType()) {
             retType = new ErrorType();
         }
-        
-        return retType;
+    	return retType;
     }
 }
 
@@ -2215,6 +2813,23 @@ class PlusNode extends ArithmeticExpNode {
         super(exp1, exp2);
     }
     
+     public void codeGen() {
+            // here we evaluate both exp1 and exp2
+            myExp1.codeGen();
+            myExp2.codeGen();
+            // pop value of exp2 to T1
+            Codegen.genPop(Codegen.T1);
+            // pop value of exp1 to T0
+            Codegen.genPop(Codegen.T0);
+            // add the two registers and store into T0
+            Codegen.generate("addu", Codegen.T0, Codegen.T1, Codegen.T0);
+            // push T0 onto stack and leave it
+            Codegen.genPush(Codegen.T0);
+        }
+
+
+
+
     public void unparse(PrintWriter p, int indent) {
         p.print("(");
         myExp1.unparse(p, 0);
@@ -2229,6 +2844,21 @@ class MinusNode extends ArithmeticExpNode {
         super(exp1, exp2);
     }
     
+     public void codeGen() {
+            // here we evaluate both exp1 and exp2
+            myExp1.codeGen();
+            myExp2.codeGen();
+            // pop value of exp2 to T1
+            Codegen.genPop(Codegen.T1);
+            // pop value of exp1 to T0
+            Codegen.genPop(Codegen.T0);
+            // add the two registers and store into T0
+            Codegen.generate("subu", Codegen.T0, Codegen.T1, Codegen.T0);
+            // push T0 onto stack and leave it
+            Codegen.genPush(Codegen.T0);
+        }
+
+
     public void unparse(PrintWriter p, int indent) {
         p.print("(");
         myExp1.unparse(p, 0);
@@ -2243,7 +2873,21 @@ class TimesNode extends ArithmeticExpNode {
         super(exp1, exp2);
     }
 
-    
+     public void codeGen() {
+            // here we evaluate both exp1 and exp2
+            myExp1.codeGen();
+            myExp2.codeGen();
+            // pop value of exp2 to T1
+            Codegen.genPop(Codegen.T1);
+            // pop value of exp1 to T0
+            Codegen.genPop(Codegen.T0);
+            // add the two registers and store into T0
+            Codegen.generate("multu", Codegen.T0, Codegen.T1, Codegen.T0);
+            // push T0 onto stack and leave it
+            Codegen.genPush(Codegen.T0);
+        }
+
+
     public void unparse(PrintWriter p, int indent) {
         p.print("(");
         myExp1.unparse(p, 0);
@@ -2257,6 +2901,21 @@ class DivideNode extends ArithmeticExpNode {
     public DivideNode(ExpNode exp1, ExpNode exp2) {
         super(exp1, exp2);
     }
+
+     public void codeGen() {
+            // here we evaluate both exp1 and exp2
+            myExp1.codeGen();
+            myExp2.codeGen();
+            // pop value of exp2 to T1
+            Codegen.genPop(Codegen.T1);
+            // pop value of exp1 to T0
+            Codegen.genPop(Codegen.T0);
+            // add the two registers and store into T0
+            Codegen.generate("divu", Codegen.T0, Codegen.T1, Codegen.T0);
+            // push T0 onto stack and leave it
+            Codegen.genPush(Codegen.T0);
+        }
+
     
     public void unparse(PrintWriter p, int indent) {
         p.print("(");
